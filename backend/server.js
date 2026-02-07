@@ -20,9 +20,6 @@ app.use('/api', routes);
 const io = initSocket(server);
 app.set('socketio', io);
 
-io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
-
 // Global Error Handler
 app.use((err, req, res, next) => {
   console.error(err.stack);
