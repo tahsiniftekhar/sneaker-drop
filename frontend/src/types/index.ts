@@ -4,21 +4,21 @@ export interface User {
 
 export interface Purchase {
   id: number;
-  user_id: number;
+  userId: number;
   User: User;
-  created_at: string;
+  createdAt: string;
 }
 
 export interface Drop {
   id: number;
   name: string;
   price: string;
-  total_stock: number;
-  available_stock: number;
+  totalStock: number;
+  availableStock: number;
   Purchases: Purchase[];
 }
 
 export interface StockUpdate {
   dropId: number;
-  available_stock: number;
+  availableStock: number;
 }

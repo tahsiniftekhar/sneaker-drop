@@ -1,68 +1,42 @@
-:root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
-}
-
-body {
-  margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
-}
-
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
-}
-
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
-}
-
-@media (prefers-color-scheme: light) {
+@layer base {
   :root {
-    color: #213547;
-    background-color: #ffffff;
+    /* "Hypebeast" Palette */
+    --background: 0 0% 100%;       /* Pure White */
+    --foreground: 240 10% 3.9%;    /* Near Black */
+    --card: 0 0% 98%;
+    --accent: 262 80% 50%;         /* Electric Purple or choose 142 70% 50% for Volt Green */
+
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
   }
-  a:hover {
-    color: #747bff;
+
+  .dark {
+    --background: 240 10% 3.9%;    /* Dark Obsidian */
+    --foreground: 0 0% 98%;        /* Soft White */
+    --card: 240 10% 10%;           /* Elevated Grey */
   }
-  button {
-    background-color: #f9f9f9;
+
+  body {
+    @apply bg-[#0f0f0f] text-white antialiased;
+    /* This creates a smooth scroll and better typography rendering */
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+}
+
+@layer components {
+  /* Premium Sneaker Card Glassmorphism */
+  .sneaker-card {
+    @apply bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden
+           transition-all duration-300 hover:border-zinc-500 hover:scale-[1.02]
+           shadow-lg hover:shadow-2xl;
+  }
+
+  /* Hype Button */
+  .btn-primary {
+    @apply bg-white text-black font-bold py-3 px-6 rounded-full
+           hover:bg-zinc-200 transition-colors uppercase tracking-widest text-sm;
   }
 }
