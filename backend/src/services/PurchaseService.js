@@ -1,8 +1,8 @@
-const { sequelize } = require('../config/database');
+const sequelize = require('../config/database');
 const { Reservation, Purchase } = require('../models/index');
 
 class PurchaseService {
-  static async executePurchase(userId, reservationId) {
+  static async executePurchase(userId, reservationId, io) {
     const transaction = await sequelize.transaction();
 
     try {
@@ -29,6 +29,7 @@ class PurchaseService {
       await reservation.save({ transaction });
 
       await transaction.commit();
+      io.emit('purchase_completed');
       return purchase;
     } catch (error) {
       await transaction.rollback();

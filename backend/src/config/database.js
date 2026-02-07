@@ -1,15 +1,11 @@
 const { Sequelize } = require('sequelize');
-require('dotenv').config({ quiet: true });
+const configs = require('./config'); // Import the config we just made
 
-const sequelize = new Sequelize(process.env.DATABASE_URL, {
-  dialect: 'postgres',
-  logging: false,
-  dialectOptions: {
-    ssl: process.env.DATABASE_URL.includes('neon.tech') ? {
-      require: true,
-      rejectUnauthorized: false
-    } : false
-  }
-});
+// Determine which environment we are in (default to development)
+const env = process.env.NODE_ENV || 'development';
+const config = configs[env];
+
+// Initialize Sequelize using the URL and the config object
+const sequelize = new Sequelize(config.url, config);
 
 module.exports = sequelize;

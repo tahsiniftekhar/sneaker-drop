@@ -29,7 +29,7 @@ exports.getAllDrops = async (req, res) => {
         {
           model: Purchase,
           limit: 3,
-          order: [['created_at', 'DESC']],
+          order: [['createdAt', 'DESC']],
           include: [
             {
               model: User,
@@ -41,6 +41,7 @@ exports.getAllDrops = async (req, res) => {
     });
     res.status(200).json(drops);
   } catch (error) {
+    console.log('error', error);
     res.status(500).json({ message: 'Server Error' });
   }
 };

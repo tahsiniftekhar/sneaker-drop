@@ -32,17 +32,17 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 
 async function startServer() {
+  server.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log('⏳ Connecting to database (Neon)...');
+  });
+
   try {
     await sequelize.authenticate();
     console.log('✅ Database connected successfully.');
 
-    await sequelize.sync({ alter: true });
-    console.log('✅ Database models synced.');
-
-    server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
   } catch (error) {
-    console.error('❌ DB Error:', error);
-    process.exit(1);
+    console.error('❌ DB Connection Error:', error);
   }
 }
 
