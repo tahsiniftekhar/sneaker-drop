@@ -6,14 +6,15 @@ import { type Drop } from '../types';
 
 interface Props {
   drop: Drop;
+  onActionTriggered?: (userId: number, dropId: number) => void;
 }
 
-export const DropCard: React.FC<Props> = ({ drop }) => {
+export const DropCard: React.FC<Props> = ({ drop, onActionTriggered }) => {
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
   const { users, loadingUsers } = useUsers();
 
   const { loading, isPurchased, reservationId, timeLeft, handleReserve, handlePurchase } =
-    useDropActions(drop.id, drop.name, selectedUserId);
+    useDropActions(drop.id, drop.name, selectedUserId, onActionTriggered);
 
   const stockPercent = (drop.availableStock / drop.totalStock) * 100;
   const totalStock = drop.totalStock;

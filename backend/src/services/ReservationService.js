@@ -3,13 +3,13 @@ const { Drop, Reservation } = require('../models/index');
 
 class ReservationService {
   static async createAtomicReservation(userId, dropId, io) {
-    console.log('createAtomicReservation', userId, dropId)
+    console.log('createAtomicReservation', userId, dropId);
     const transaction = await sequelize.transaction();
 
     try {
       const drop = await Drop.findByPk(dropId, {
         lock: transaction.LOCK.UPDATE,
-        transaction
+        transaction,
       });
 
       if (!drop || drop.availableStock <= 0) {
@@ -20,23 +20,27 @@ class ReservationService {
       await drop.save({ transaction });
 
       const expiresAt = new Date(Date.now() + 60000);
-      const reservation = await Reservation.create({
-        user_id: userId,
-        drop_id: dropId,
-        expiresAt,
-        status: 'pending'
-      }, { transaction });
+      const reservation = await Reservation.create(
+        {
+          user_id: userId,
+          drop_id: dropId,
+          expiresAt,
+          status: 'pending',
+        },
+        { transaction }
+      );
 
       await transaction.commit();
 
       io.emit('stock_updated', {
         dropId,
-        availableStock: drop.availableStock
+        availableStock: drop.availableStock,
+        triggeredByUserId: userId,
       });
 
       this.startRecoveryTimer(reservation.id, dropId, io);
 
-      console.log('reservation', reservation)
+      console.log('reservation', reservation);
       return reservation;
     } catch (error) {
       await transaction.rollback();
@@ -62,7 +66,7 @@ class ReservationService {
 
           io.emit('stock_updated', {
             dropId,
-            availableStock: drop.availableStock
+            availableStock: drop.availableStock,
           });
           console.log(`Reservation ${reservationId} expired. Stock returned.`);
         } catch (e) {

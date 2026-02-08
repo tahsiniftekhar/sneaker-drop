@@ -49,6 +49,7 @@ class PurchaseService {
         dropId: reservation.drop_id,
         availableStock: drop.availableStock,
         purchases: recentPurchases,
+        triggeredByUserId: userId,
       });
 
       return purchase;

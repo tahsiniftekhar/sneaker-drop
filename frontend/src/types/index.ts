@@ -22,4 +22,5 @@ export interface StockUpdate {
   dropId: number;
   availableStock: number;
   purchases?: Purchase[];
+  triggeredByUserId?: number;
 }

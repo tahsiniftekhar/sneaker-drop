@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import api from '../api/axios';
 
-export const useDropActions = (dropId: number, dropName: string, userId: number | null) => {
+export const useDropActions = (
+  dropId: number,
+  dropName: string,
+  userId: number | null,
+  onActionTriggered?: (userId: number, dropId: number) => void
+) => {
   const [loading, setLoading] = useState(false);
   const [isPurchased, setIsPurchased] = useState(false);
   const [reservationId, setReservationId] = useState<number | null>(null);
@@ -35,6 +40,7 @@ export const useDropActions = (dropId: number, dropName: string, userId: number 
       });
       setReservationId(res.data.id);
       setTimeLeft(60);
+      onActionTriggered?.(userId, dropId);
       toast.success(`Successfully reserved ${dropName}!`, { duration: 4000 });
     } catch (err: any) {
       toast.error(`Failed to reserve ${dropName}. ${err.response?.data?.message || err.message}`, {
@@ -55,8 +61,9 @@ export const useDropActions = (dropId: number, dropName: string, userId: number 
         reservationId,
       });
 
-      setIsPurchased(true); 
+      setIsPurchased(true);
       setReservationId(null);
+      onActionTriggered?.(userId, dropId);
       toast.success(`🎉 Purchase of ${dropName} complete!`, { duration: 5000 });
     } catch (err: any) {
       toast.error(

@@ -12,9 +12,22 @@ const Dashboard: React.FC = () => {
     stock: number;
     name: string;
     type: 'decrease' | 'increase';
+    triggeredByUserId?: number;
   } | null>(null);
+  const recentActionsRef = useRef<Set<string>>(new Set());
   const previousStockRef = useRef<Record<number, number>>({});
   const { socket } = useSocket();
+
+  const createActionKey = (userId: number, dropId: number) => `${userId}:${dropId}`;
+
+  const registerUserAction = useCallback((userId: number, dropId: number) => {
+    const actionKey = createActionKey(userId, dropId);
+    recentActionsRef.current.add(actionKey);
+
+    setTimeout(() => {
+      recentActionsRef.current.delete(actionKey);
+    }, 2000);
+  }, []);
 
   useEffect(() => {
     const fetchDrops = async () => {
@@ -47,6 +60,7 @@ const Dashboard: React.FC = () => {
               stock: newStock,
               name: d.name,
               type: stockDifference > 0 ? 'decrease' : 'increase',
+              triggeredByUserId: data.triggeredByUserId,
             });
           }
 
@@ -64,19 +78,50 @@ const Dashboard: React.FC = () => {
   useEffect(() => {
     if (!lastUpdate) return;
 
+    if (lastUpdate.type === 'decrease' && lastUpdate.triggeredByUserId) {
+      const actionKey = createActionKey(lastUpdate.triggeredByUserId, lastUpdate.dropId);
+      if (recentActionsRef.current.has(actionKey)) {
+        recentActionsRef.current.delete(actionKey);
+        return;
+      }
+    }
+
+    const isLowStock = lastUpdate.stock > 0 && lastUpdate.stock <= 5;
+
     if (lastUpdate.type === 'decrease') {
-      toast.success(
-        `📦 ${lastUpdate.name} - ${lastUpdate.stock} item${lastUpdate.stock !== 1 ? 's' : ''} left`,
-        {
-          duration: 5000,
-        }
+      toast(
+        (t) => (
+          <span className="flex items-center gap-2">
+            {isLowStock ? '⚠️' : '📦'}
+            <span className="font-medium text-neutral-900">
+              <strong className="text-indigo-600">{lastUpdate.name}</strong>
+              {isLowStock ? ' is almost gone!' : ' stock updated:'}
+              <span
+                className={`ml-2 px-2 py-0.5 rounded font-bold ${
+                  isLowStock
+                    ? 'bg-red-100 text-red-600 animate-pulse'
+                    : 'bg-neutral-100 text-neutral-800'
+                }`}
+              >
+                {lastUpdate.stock} left
+              </span>
+            </span>
+          </span>
+        ),
+        { duration: 5000, position: 'top-right' }
       );
     } else {
       toast.success(
-        `✨ ${lastUpdate.name} - Stock recovered! ${lastUpdate.stock} available again`,
-        {
-          duration: 6000,
-        }
+        (t) => (
+          <span className="flex items-center gap-2">
+            <span className="animate-bounce">✨</span>
+            <span className="font-medium text-neutral-900">
+              Restock! <strong className="text-emerald-600">{lastUpdate.name}</strong> is back with
+              <span className="ml-2 font-bold text-emerald-700">{lastUpdate.stock} units</span>
+            </span>
+          </span>
+        ),
+        { duration: 6000, icon: null }
       );
     }
   }, [lastUpdate]);
@@ -109,7 +154,7 @@ const Dashboard: React.FC = () => {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8 max-w-7xl mx-auto">
           {drops.map((drop) => (
-            <DropCard key={drop.id} drop={drop} />
+            <DropCard key={drop.id} drop={drop} onActionTriggered={registerUserAction} />
           ))}
         </div>
       )}
