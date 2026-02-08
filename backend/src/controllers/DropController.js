@@ -11,8 +11,8 @@ exports.createDrop = async (req, res) => {
     const newDrop = await Drop.create({
       name,
       price,
-      total_stock,
-      available_stock: total_stock,
+      totalStock: total_stock,
+      availableStock: total_stock,
     });
 
     res.status(201).json(newDrop);
@@ -24,22 +24,25 @@ exports.createDrop = async (req, res) => {
 
 exports.getAllDrops = async (req, res) => {
   try {
-    const drops = await Drop.findAll({
-      include: [
-        {
-          model: Purchase,
-          limit: 3,
+    const drops = await Drop.findAll();
+
+    // Fetch top 3 purchases for each drop separately to avoid Sequelize limit bug
+    const dropsWithPurchases = await Promise.all(
+      drops.map(async (drop) => {
+        const purchases = await Purchase.findAll({
+          where: { drop_id: drop.id },
+          include: [{ model: User, attributes: ['id', 'username'] }],
           order: [['createdAt', 'DESC']],
-          include: [
-            {
-              model: User,
-              attributes: ['username'],
-            },
-          ],
-        },
-      ],
-    });
-    res.status(200).json(drops);
+          limit: 3,
+        });
+        return {
+          ...drop.toJSON(),
+          Purchases: purchases,
+        };
+      })
+    );
+
+    res.status(200).json(dropsWithPurchases);
   } catch (error) {
     console.log('error', error);
     res.status(500).json({ message: 'Server Error' });
