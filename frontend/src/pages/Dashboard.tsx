@@ -25,7 +25,7 @@ const Dashboard: React.FC = () => {
       socket.on('stock_updated', (data: StockUpdate) => {
         setDrops((currentDrops) =>
           currentDrops.map((d) =>
-            d.id === data.dropId ? { ...d, available_stock: data.available_stock } : d
+            d.id === data.dropId ? { ...d, availableStock: data.availableStock } : d
           )
         );
       });

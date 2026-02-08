@@ -1,6 +1,6 @@
 import { Clock, ShoppingCart, UserCheck } from 'lucide-react';
-import React, { useEffect, useState } from 'react';
-import api from '../api/axios';
+import React from 'react';
+import { useDropActions } from '../hooks/useDropActions';
 import { type Drop } from '../types';
 
 interface Props {
@@ -8,62 +8,8 @@ interface Props {
 }
 
 export const DropCard: React.FC<Props> = ({ drop }) => {
-  const [loading, setLoading] = useState(false);
-  const [isPurchased, setIsPurchased] = useState(false);
-  const [reservationId, setReservationId] = useState<number | null>(null);
-  const [timeLeft, setTimeLeft] = useState(60);
-
-  useEffect(() => {
-    let timer: number | undefined;
-
-    if (reservationId && timeLeft > 0) {
-      timer = window.setInterval(() => {
-        setTimeLeft((prev) => prev - 1);
-      }, 1000);
-    } else if (timeLeft === 0) {
-      setReservationId(null);
-      setTimeLeft(60);
-    }
-
-    return () => {
-      if (timer) clearInterval(timer);
-    };
-  }, [reservationId, timeLeft]);
-
-  const handleReserve = async () => {
-    setLoading(true);
-    try {
-      const res = await api.post('/reservations', {
-        userId: 1,
-        dropId: drop.id,
-      });
-      setReservationId(res.data.id);
-      setTimeLeft(60);
-    } catch (err) {
-      alert('Too late. Item is out of stock.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handlePurchase = async () => {
-    if (!reservationId) return;
-
-    setLoading(true);
-    try {
-      await api.post('/purchases/complete', {
-        userId: 1,
-        reservationId,
-      });
-      setIsPurchased(true);
-      setReservationId(null);
-    } catch (err) {
-      alert('Reservation expired. Stock was released.');
-      setReservationId(null);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { loading, isPurchased, reservationId, timeLeft, handleReserve, handlePurchase } =
+    useDropActions(drop.id, drop.name);
 
   const stockPercent = (drop.availableStock / drop.totalStock) * 100;
   const totalStock = drop.totalStock;

@@ -1,10 +1,13 @@
-import './App.css';
+import { Toaster } from 'react-hot-toast';
 import Dashboard from './pages/Dashboard';
 
-
 function App() {
-return <Dashboard />;
+  return (
+    <>
+      <Dashboard />
+      <Toaster position="bottom-right" />
+    </>
+  );
 }
-
 
 export default App;

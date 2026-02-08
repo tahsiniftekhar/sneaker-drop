@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
+import toast from 'react-hot-toast';
 import api from '../api/axios';
 
-export const useDropActions = (dropId: number) => {
+export const useDropActions = (dropId: number, dropName: string) => {
   const [loading, setLoading] = useState(false);
+  const [isPurchased, setIsPurchased] = useState(false);
   const [reservationId, setReservationId] = useState<number | null>(null);
   const [timeLeft, setTimeLeft] = useState(60);
 
@@ -32,8 +34,9 @@ export const useDropActions = (dropId: number) => {
       });
       setReservationId(res.data.id);
       setTimeLeft(60);
-    } catch (err) {
-      alert('Too late. Item is out of stock.');
+      toast.success(`Successfully reserved ${dropName}!`);
+    } catch (err: any) {
+      toast.error(`Failed to reserve ${dropName}. ${err.response?.data?.message || err.message}`);
     } finally {
       setLoading(false);
     }
@@ -48,10 +51,12 @@ export const useDropActions = (dropId: number) => {
         userId: 1,
         reservationId,
       });
-      //setIsPurchased(true); // setIsPurchased is not defined
       setReservationId(null);
-    } catch (err) {
-      alert('Reservation expired. Stock was released.');
+      toast.success(`Purchase of ${dropName} complete!`);
+    } catch (err: any) {
+      toast.error(
+        `Failed to complete purchase for ${dropName}. ${err.response?.data?.message || err.message}`
+      );
       setReservationId(null);
     } finally {
       setLoading(false);
@@ -60,6 +65,7 @@ export const useDropActions = (dropId: number) => {
 
   return {
     loading,
+    isPurchased,
     reservationId,
     timeLeft,
     handleReserve,
