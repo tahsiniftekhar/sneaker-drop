@@ -3,6 +3,7 @@ const router = express.Router();
 const dropRoutes = require('./dropRoutes');
 const reservationRoutes = require('./reservationRoutes');
 const purchaseRoutes = require('./purchaseRoutes')
+const userRoutes = require('./userRoutes')
 
 router.get('/health', async (req, res) => {
   try {
@@ -16,5 +17,6 @@ router.get('/health', async (req, res) => {
 router.use('/drops', dropRoutes);
 router.use('/reservations', reservationRoutes);
 router.use('/purchases', purchaseRoutes);
+router.use('/users', userRoutes);
 
 module.exports = router;
