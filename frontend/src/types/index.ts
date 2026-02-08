@@ -4,7 +4,7 @@ export interface User {
 
 export interface Purchase {
   id: number;
-  userId: number;
+  user_id: number;
   User: User;
   createdAt: string;
 }
@@ -21,4 +21,5 @@ export interface Drop {
 export interface StockUpdate {
   dropId: number;
   availableStock: number;
+  purchases?: Purchase[];
 }

@@ -1,6 +1,7 @@
 import { Clock, ShoppingCart, UserCheck } from 'lucide-react';
-import React from 'react';
+import React, { useState } from 'react';
 import { useDropActions } from '../hooks/useDropActions';
+import { useUsers } from '../hooks/useUsers';
 import { type Drop } from '../types';
 
 interface Props {
@@ -8,11 +9,16 @@ interface Props {
 }
 
 export const DropCard: React.FC<Props> = ({ drop }) => {
+  const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
+  const { users, loadingUsers } = useUsers();
+
   const { loading, isPurchased, reservationId, timeLeft, handleReserve, handlePurchase } =
-    useDropActions(drop.id, drop.name);
+    useDropActions(drop.id, drop.name, selectedUserId);
 
   const stockPercent = (drop.availableStock / drop.totalStock) * 100;
   const totalStock = drop.totalStock;
+
+  const isActionDisabled = loading || drop.availableStock === 0 || !selectedUserId || loadingUsers;
 
   return (
     <div className="bg-neutral-900 rounded-2xl border border-neutral-800 shadow-xl hover:shadow-2xl hover:shadow-indigo-500/20 transition-all duration-300 flex flex-col h-full group">
@@ -67,6 +73,33 @@ export const DropCard: React.FC<Props> = ({ drop }) => {
           </ul>
         </div>
 
+        {/* User Selection Dropdown */}
+        <div className="mb-6">
+          <label
+            htmlFor={`user-select-${drop.id}`}
+            className="block text-sm font-medium text-neutral-400 mb-2"
+          >
+            Select User:
+          </label>
+          <select
+            disabled={loadingUsers}
+            id={`user-select-${drop.id}`}
+            value={selectedUserId || ''}
+            onChange={(e) => setSelectedUserId(Number(e.target.value))}
+            className="w-full p-2.5 bg-neutral-800 border border-neutral-700 rounded-lg text-white text-sm focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-neutral-900 disabled:text-neutral-500 disabled:cursor-not-allowed"
+            required
+          >
+            <option value="" disabled>
+              {loadingUsers ? 'Loading users...' : '-- Choose a user --'}
+            </option>
+            {users.map((user) => (
+              <option key={user.id} value={user.id}>
+                {user.username}
+              </option>
+            ))}
+          </select>
+        </div>
+
         <div className="mt-auto border-t border-neutral-800 pt-5">
           {isPurchased ? (
             <div className="w-full py-3.5 bg-emerald-900/30 text-emerald-300 text-center font-semibold rounded-lg border border-emerald-700/50 shadow-inner shadow-emerald-900/20">
@@ -75,10 +108,10 @@ export const DropCard: React.FC<Props> = ({ drop }) => {
           ) : reservationId ? (
             <button
               onClick={handlePurchase}
-              disabled={loading}
-              className="w-full py-4 bg-indigo-700 hover:bg-indigo-600 text-white rounded-lg font-bold transition-all flex flex-col items-center justify-center relative overflow-hidden shadow-lg shadow-indigo-900/30"
+              disabled={loading || !selectedUserId}
+              className="w-full py-4 bg-indigo-700 hover:bg-indigo-600 disabled:bg-indigo-900 disabled:cursor-not-allowed text-white rounded-lg font-bold transition-all flex flex-col items-center justify-center relative overflow-hidden shadow-lg shadow-indigo-900/30"
             >
-              <span className="text-sm">Complete purchase</span>
+              <span className="text-sm">{loading ? 'Purchasing...' : 'Complete purchase'}</span>
               <span
                 className={`text-[10px] mt-1 flex items-center ${
                   timeLeft <= 10 ? 'text-rose-300 animate-pulse' : 'text-indigo-300'
@@ -96,7 +129,7 @@ export const DropCard: React.FC<Props> = ({ drop }) => {
           ) : (
             <button
               onClick={handleReserve}
-              disabled={loading || drop.availableStock === 0}
+              disabled={isActionDisabled} // Use the combined disabled state
               className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold disabled:bg-neutral-800 disabled:text-neutral-600 transition-all shadow-md shadow-indigo-600/20"
             >
               {loading ? 'Reserving...' : drop.availableStock === 0 ? 'Sold out' : 'Reserve spot'}
