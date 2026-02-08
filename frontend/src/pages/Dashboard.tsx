@@ -90,7 +90,7 @@ const Dashboard: React.FC = () => {
 
     if (lastUpdate.type === 'decrease') {
       toast(
-        (t) => (
+        (_t) => (
           <span className="flex items-center gap-2">
             {isLowStock ? '⚠️' : '📦'}
             <span className="font-medium text-neutral-900">
@@ -112,7 +112,7 @@ const Dashboard: React.FC = () => {
       );
     } else {
       toast.success(
-        (t) => (
+        (_t) => (
           <span className="flex items-center gap-2">
             <span className="animate-bounce">✨</span>
             <span className="font-medium text-neutral-900">
