@@ -305,6 +305,9 @@ docker run -d --env-file .env --memory=192m --cpus=0.5 ghcr.io/tahsiniftekhar/sn
 
 Nightly demo reset: schedule the `reset` command (e.g. cron on the VPS). It **destroys all data** in
 the target database and re-seeds it, and is safe to run repeatedly. Locally: `npm run db:reset-demo`.
+It refuses to start (exit 1, nothing touched) unless `DEMO_RESET_ALLOWED=true` is set and
+`DATABASE_URL` names the database `sneaker-drop`; `reset --check` runs only that guard
+(`npm run test:guard` tests it). Cron: `docker compose run --rm -e DEMO_RESET_ALLOWED=true sneaker-drop-api reset`.
 There are no backups.
 
 ---
