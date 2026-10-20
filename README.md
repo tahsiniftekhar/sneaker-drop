@@ -277,10 +277,10 @@ vercel deploy
    DB_SSL=true NODE_ENV=production npx sequelize-cli db:migrate
    ```
 
-### Backend (Docker, shared VPS)
+### Backend (Docker deployment, behind a reverse proxy)
 
 Image: `ghcr.io/tahsiniftekhar/sneaker-drop-api` (tags `latest`, `sha-<short>`), built by
-`.github/workflows/docker-image.yml` on every push to `develop`. Never build it on the VPS.
+`.github/workflows/docker-image.yml` on every push to `develop`. Never build it on the server.
 
 | Env var            | Purpose                                                              |
 | ------------------ | -------------------------------------------------------------------- |
@@ -303,9 +303,12 @@ docker run --rm --env-file .env ghcr.io/tahsiniftekhar/sneaker-drop-api reset   
 docker run -d --env-file .env --memory=192m --cpus=0.5 ghcr.io/tahsiniftekhar/sneaker-drop-api  # start (default)
 ```
 
-Nightly demo reset: schedule the `reset` command (e.g. cron on the VPS). It **destroys all data** in
+Nightly demo reset: schedule the `reset` command (e.g. cron). It **destroys all data** in
 the target database and re-seeds it, and is safe to run repeatedly. Locally: `npm run db:reset-demo`.
-There are no backups.
+It refuses to start (exit 1, nothing touched) unless `DEMO_RESET_ALLOWED=true` is set and
+`DATABASE_URL` names the database `sneaker-drop`; `reset --check` runs only that guard
+(`npm run test:guard` tests it). Cron: `docker compose run --rm -e DEMO_RESET_ALLOWED=true sneaker-drop-api reset`.
+Demo data is reset and re-seeded nightly.
 
 ---
 

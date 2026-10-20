@@ -12,7 +12,8 @@ case "${1:-start}" in
     exec node_modules/.bin/sequelize-cli db:migrate
     ;;
   reset)
-    exec node scripts/reset-demo.js
+    shift
+    exec node scripts/reset-demo.js "$@"
     ;;
   *)
     exec "$@"
