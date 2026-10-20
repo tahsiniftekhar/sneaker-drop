@@ -17,7 +17,7 @@ A real-time high-traffic inventory system for limited-edition sneaker drops with
 ```bash
 cd backend
 npm install
-cp .env.example .env  # Configure DATABASE_URL
+cp .env.example .env  # Configure DATABASE_URL (and DB_SSL=true for Neon)
 npx sequelize-cli db:migrate
 npx sequelize-cli db:seed:all
 npm run dev
@@ -271,10 +271,41 @@ vercel deploy
 1. Create account at [neon.tech](https://neon.tech)
 2. Create project
 3. Copy connection string to `DATABASE_URL`
-4. Run migrations in production:
+4. Set `DB_SSL=true` (Neon requires TLS; SSL is off unless this is set)
+5. Run migrations in production:
    ```bash
-   NODE_ENV=production npx sequelize-cli db:migrate
+   DB_SSL=true NODE_ENV=production npx sequelize-cli db:migrate
    ```
+
+### Backend (Docker, shared VPS)
+
+Image: `ghcr.io/tahsiniftekhar/sneaker-drop-api` (tags `latest`, `sha-<short>`), built by
+`.github/workflows/docker-image.yml` on every push to `develop`. Never build it on the VPS.
+
+| Env var            | Purpose                                                              |
+| ------------------ | -------------------------------------------------------------------- |
+| `DATABASE_URL`     | Postgres connection string (required)                                |
+| `DB_SSL`           | `true` to use TLS (Neon). Unset/`false` for Postgres on a private network |
+| `PORT`             | Listen port (default `5000`)                                         |
+| `FRONTEND_URL`     | Allowed Socket.io origin (the Vercel frontend)                       |
+| `MIGRATE_ON_START` | `true` to run migrations before starting (default: off)              |
+
+The image runs as a non-root user, logs to stdout, sets `NODE_OPTIONS=--max-old-space-size=128`
+and is sized for a container limit of 192 MB / 0.5 CPU. `GET /health` returns `200`
+`{"status":"ok","database":"up"}` (or `503` when the DB is unreachable); the app trusts 2 proxy hops
+(Cloudflare then Caddy).
+
+Container commands (first argument of the entrypoint):
+
+```bash
+docker run --rm --env-file .env ghcr.io/tahsiniftekhar/sneaker-drop-api migrate   # sequelize-cli db:migrate
+docker run --rm --env-file .env ghcr.io/tahsiniftekhar/sneaker-drop-api reset     # drop schema, migrate, seed
+docker run -d --env-file .env --memory=192m --cpus=0.5 ghcr.io/tahsiniftekhar/sneaker-drop-api  # start (default)
+```
+
+Nightly demo reset: schedule the `reset` command (e.g. cron on the VPS). It **destroys all data** in
+the target database and re-seeds it, and is safe to run repeatedly. Locally: `npm run db:reset-demo`.
+There are no backups.
 
 ---
 

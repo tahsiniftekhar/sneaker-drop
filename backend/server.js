@@ -13,6 +13,19 @@ const server = http.createServer(app);
 app.use(cors());
 app.use(express.json());
 
+// Behind Cloudflare -> Caddy (two proxy hops)
+app.set('trust proxy', 2);
+
+// Liveness/readiness probe (no auth)
+app.get('/health', async (req, res) => {
+  try {
+    await sequelize.authenticate();
+    res.json({ status: 'ok', database: 'up' });
+  } catch (error) {
+    res.status(503).json({ status: 'error', database: 'down' });
+  }
+});
+
 // Routes
 app.use('/api', routes);
 
@@ -34,7 +47,7 @@ const PORT = process.env.PORT || 5000;
 async function startServer() {
   server.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
-    console.log('⏳ Connecting to database (Neon)...');
+    console.log('⏳ Connecting to database...');
   });
 
   try {
