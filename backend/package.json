@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "test:atomic": "node test-atomic-reservation.js",
     "test:e2e": "node test-e2e.js",
-    "test": "npm run test:atomic && npm run test:e2e"
+    "test": "npm run test:atomic && npm run test:e2e",
+    "db:reset-demo": "node scripts/reset-demo.js"
   },
   "keywords": [],
   "author": "",
@@ -22,10 +23,10 @@
     "pg": "^8.18.0",
     "pg-hstore": "^2.3.4",
     "sequelize": "^6.37.7",
+    "sequelize-cli": "^6.6.5",
     "socket.io": "^4.8.3"
   },
   "devDependencies": {
-    "nodemon": "^3.1.11",
-    "sequelize-cli": "^6.6.5"
+    "nodemon": "^3.1.11"
   }
 }
