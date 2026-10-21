@@ -10,7 +10,8 @@
     "test:e2e": "node test-e2e.js",
     "test": "npm run test:atomic && npm run test:e2e",
     "test:guard": "node --test scripts/demo-reset-guard.test.js",
-    "db:reset-demo": "node scripts/reset-demo.js"
+    "db:reset-demo": "node scripts/reset-demo.js",
+    "test:db": "node --test --test-concurrency=1 --test-timeout=30000 test/*.test.js"
   },
   "keywords": [],
   "author": "",
