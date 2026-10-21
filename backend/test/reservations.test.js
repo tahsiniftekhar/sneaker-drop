@@ -218,8 +218,9 @@ test('purchase commits first: the sweeper skips the row and never returns the so
   const { created } = await PurchaseService.purchase(1, reservation.id, { transaction: buy });
   assert.equal(created, true);
 
-  // The purchase holds the row lock. The sweep must skip the row, not queue behind it: a sweeper
-  // that waited and then expired the row regardless would hand the sold unit back to stock.
+  // The purchase holds the row lock. The sweep must skip the row, not queue behind it. Waiting would
+  // still leave the data correct (the status re-check sees 'completed'), but it stalls expiry for
+  // every instance while the purchase is open: a liveness check, not a data one.
   const { outcome, result } = await sweepWhileHeld(buy, 'commit');
   assert.equal(outcome, 'returned', 'the sweep skipped the locked row instead of waiting on it');
   assert.deepEqual(result, []);

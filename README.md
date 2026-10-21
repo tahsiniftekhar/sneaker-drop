@@ -14,7 +14,7 @@ There is no authentication or authorization. The API takes `userId` from the req
 
 ## Local setup
 
-Requirements: Node.js 18+ (22 matches the Docker image), PostgreSQL, npm.
+Requirements: Node.js 22 or newer (the Docker image and CI use 22; `npm run test:db` uses test-runner flags such as `--test-timeout` that Node 18 and early Node 20 reject), PostgreSQL, npm.
 
 Backend:
 
@@ -135,6 +135,8 @@ Integration tests for the reservation lifecycle run against a real Postgres data
 ```bash
 TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/sneaker-drop-test npm run test:db
 ```
+
+Against the same kind of `-test` database, `npm run test:mutation` reintroduces past bugs one at a time and checks that the suite catches each, and `npm run bench:reserve` (with `BENCH_DATABASE_URL`) measures reservation throughput. Results and how to read them are in [docs/reservations.md](docs/reservations.md).
 
 Unit tests for the demo-reset guard need no database:
 

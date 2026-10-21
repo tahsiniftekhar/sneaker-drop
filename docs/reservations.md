@@ -73,11 +73,42 @@ single drop is about `1 / (time the row lock is held)`. The lock is held from th
 commit, so that time is the remaining statement latency (the reservation INSERT, including the FK
 checks and the unique-index probe) plus commit, dominated by the WAL fsync.
 
-Order-of-magnitude reasoning only: if that window is roughly 1 to a few milliseconds on a local
-or same-zone primary, a single drop sustains in the hundreds to low thousands of reservations per
-second. App-to-database round trips add to the hold time whenever the app pauses between the UPDATE and commit, which is why the transaction is just two statements with nothing in between. Different drops do not
-contend with each other. **This has not been benchmarked here**; the figures are a bound derived
-from the design, not a measurement, and slower storage or synchronous replication will lower them.
+App-to-database round trips add to the hold time whenever the app pauses between taking the lock
+and commit, which is why the transaction is just two statements with nothing in between.
+`SELECT ... FOR UPDATE` followed by a separate UPDATE adds one more round trip while the lock is
+held. Different drops do not contend with each other.
+
+Measured with `backend/scripts/bench-reserve.js` (one drop, 3000 reservations per run after 200
+warm-up, each by a distinct user, pool of 64, C concurrent workers). It compares
+`ReservationService.reserve` against a `SELECT "availableStock" ... FOR UPDATE` / UPDATE /
+INSERT transaction, and checks `availableStock + pending = totalStock` after every run:
+
+```bash
+BENCH_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:55432/sneaker-drop-test npm run bench:reserve
+```
+
+| strategy            | C  | ops/s     | p50 ms | p99 ms  |
+| ------------------- | -- | --------- | ------ | ------- |
+| conditional UPDATE  | 1  | 1190–1346 | 0.7    | 1.9–2.9 |
+| conditional UPDATE  | 8  | 1480–1560 | 4.2    | 18–20   |
+| conditional UPDATE  | 32 | 1199–1224 | 18–19  | 113–122 |
+| conditional UPDATE  | 64 | 949–1027  | 41–43  | 303–375 |
+| SELECT FOR UPDATE   | 1  | 1056–1154 | 0.8    | 2.1–2.2 |
+| SELECT FOR UPDATE   | 8  | 1108–1186 | 2.6–2.9| 95–116  |
+| SELECT FOR UPDATE   | 32 | 906–1018  | 22–23  | 141–177 |
+| SELECT FOR UPDATE   | 64 | 676–848   | 50–60  | 360–464 |
+
+Ranges are over three runs on an Apple M4, with Node 24 and Postgres 16 in Docker Desktop on the
+same machine (default config, fsync on). The invariant held in every run for both strategies.
+
+- Both strategies are correct. The difference is cost, not safety.
+- The conditional UPDATE is 15–35% faster from C=8 up. At C=1 the two are within noise. Its
+  tail is much shorter at moderate concurrency: p99 of about 19 ms against about 100 ms at C=8.
+- Neither scales with concurrency. Throughput peaks around C=8 and falls after that, because
+  every attempt queues on the same row lock. More workers add latency, not throughput.
+- Run-to-run variance is about 15%, so treat smaller differences as noise. The absolute numbers
+  are for a laptop with client and database on one machine. Slower storage, network latency to the
+  database, or synchronous replication will lower them. The relative comparison is the useful part.
 
 Pool size matters: `DB_POOL_MAX` (default 5, `backend/src/config/config.js`). Connections beyond
 what the hot row can serve only queue on the lock while holding a pooled connection, which starves
@@ -152,9 +183,12 @@ can emit `stock_updated`.
   The lock is transaction-scoped, so it is released on commit, rollback or connection loss.
 - `FOR UPDATE SKIP LOCKED` on the due reservations: a reservation locked by an in-flight purchase
   is skipped rather than waited on. If the purchase commits, the row is no longer pending and
-  later sweeps ignore it. If it rolls back, the next sweep expires it. Waiting would be unsafe
-  as well as slow: a sweeper that queued behind a purchase and then expired the row anyway would
-  return a sold unit.
+  later sweeps ignore it. If it rolls back, the next sweep expires it. Plain `FOR UPDATE` would
+  still be correct: after the wait, Postgres re-checks `status = 'pending'` on the committed row
+  version (EvalPlanQual), finds it `completed`, and leaves it alone. What waiting costs is
+  liveness. The sweeper stalls behind every in-flight purchase in its batch while holding the
+  advisory lock, so no instance can expire anything until those purchases finish. Waiting becomes
+  unsafe only if the status re-check is removed as well, which is the old timer bug (section 4).
 - Batch of 500 (`LIMIT`) ordered by `expiresAt`, looping inside `start` while a sweep comes back
   full, so a large backlog (for example after downtime) is drained in bounded transactions.
 - Partial index for the scan, so the cost follows the number of pending rows, not the table size:
@@ -212,7 +246,8 @@ migration makes `status`, `user_id` and `drop_id` NOT NULL on `Reservations` and
 - No authentication. `userId` comes from the request body, so any client can act as any user.
   This is a demo; the "user cannot buy someone else's reservation" check protects against mistakes
   by honest clients, not against an attacker.
-- Throughput per drop is bounded by the hot row (section 3) and has not been benchmarked.
+- Throughput per drop is bounded by the hot row: about 1000–1500 reservations per second on a
+  laptop, peaking near 8 concurrent writers (section 3).
 - Stock returns up to one sweep interval after the deadline (section 5).
 - Time comes from the database clock (`now()`), so app instances need not agree on time.
 
@@ -241,6 +276,27 @@ else). CI runs it. Each test forces one guarantee:
 - Reservations that expired during simulated downtime are released by the startup sweep, with one
   `stock_updated` event.
 
-Per the commit message, each guarantee was checked by reintroducing the bug (status check
-removed, deadline check removed, old-timer sweeper, no SKIP LOCKED, no stock condition, no
-advisory lock); every mutation fails at least one test.
+`backend/scripts/mutation-check.js` checks that the tests catch each bug. It reintroduces one bug at
+a time into the service source, runs the suite, records which tests fail, and always restores the
+file. It exits non-zero if any mutation survives:
+
+```bash
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:55432/sneaker-drop-test npm run test:mutation
+```
+
+Result (about 10 s, no survivors):
+
+| mutation                                    | kind     | caught by                                                                                  |
+| ------------------------------------------- | -------- | ------------------------------------------------------------------------------------------ |
+| purchase drops `status = 'pending'`         | safety   | at least 4 tests: concurrent purchases, retry, expiry-first race, another user's reservation (a 5th varies by run) |
+| purchase drops the `expiresAt` check        | safety   | purchase past the deadline is refused                                                      |
+| sweeper drops `status = 'pending'` (old bug) | safety  | purchase-first race (sold unit returned to stock), stress, single-flight (stock CHECK violated) |
+| reserve drops `availableStock > 0`          | safety   | concurrent reservations: the CHECK constraint still blocks the oversell, but losers get a raw error instead of `SOLD_OUT` |
+| sweeper uses `FOR UPDATE` without `SKIP LOCKED` | liveness | purchase-first and rollback races: the sweep blocks on the purchase instead of skipping it |
+| advisory lock is a no-op                    | liveness | single-flight: the second sweeper queues on the `Drops` row instead of backing off        |
+
+The two liveness rows leave the data correct. With `SKIP LOCKED` removed, the purchase-first test
+passes every data assertion (reservation `completed`, stock 0, invariant holds). It fails only
+the check that the sweep did not wait (section 5). Without the advisory lock, a second sweeper
+waits rather than corrupting anything. The risk there is deadlock between sweepers on several
+drops, which this single-drop test does not reproduce.
