@@ -154,11 +154,10 @@ function waitForStockUpdate(dropId, expectedStock) {
   });
 }
 
-async function testStockUpdate(dropId, initialStock) {
+async function testStockUpdate(stockUpdated, initialStock) {
   console.log('📡 Test 3: Verify real-time stock update via WebSocket');
   try {
-    const expectedStock = initialStock - 1;
-    const stockUpdate = await waitForStockUpdate(dropId, expectedStock);
+    const stockUpdate = await stockUpdated;
 
     console.log(`   ✅ Stock update received`);
     console.log(`   ✅ Stock: ${stockUpdate.availableStock}/${initialStock}`);
@@ -250,8 +249,10 @@ async function runTests() {
 
     // Run tests
     const drop = await testFetchDrops();
+    // Listen before reserving: the broadcast is sent before the reservation response returns.
+    const stockUpdated = waitForStockUpdate(drop.id, drop.availableStock - 1);
     const reservation = await testReservation(drop.id, testUser.id);
-    await testStockUpdate(drop.id, drop.availableStock);
+    await testStockUpdate(stockUpdated, drop.availableStock);
     const purchase = await testPurchase(reservation.id, testUser.id);
     await testVerifyFinalState(drop.id);
 
