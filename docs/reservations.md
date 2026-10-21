@@ -1,0 +1,246 @@
+# Reservation consistency
+
+Design note for the reserve -> purchase -> expire lifecycle in `backend/src/services/`
+(`ReservationService`, `PurchaseService`, `ExpiryService`) and the database guarantees added in
+`backend/src/migrations/20261021120000-reservation-consistency.js`. The aim is that correctness
+comes from the database, not from application timing, so it holds across restarts, multiple app
+instances, retries and concurrent requests.
+
+## 1. Lifecycle
+
+```
+reserve ──> pending ──> completed   (purchase, before expiresAt)
+               └──────> expired     (sweeper, after expiresAt)
+```
+
+- `reserve` takes one unit of stock and creates a `pending` reservation with
+  `expiresAt = now() + RESERVATION_TTL_SECONDS` (default 60).
+- `purchase` moves a pending, unexpired reservation to `completed` and inserts one `Purchases` row.
+- The sweeper moves due pending reservations to `expired` and returns their units to stock.
+
+`completed` and `expired` are terminal. For every drop, at all times:
+
+```
+availableStock + count(pending) + count(completed) = totalStock
+```
+
+Every unit is on sale, held, or sold. Each transition changes the reservation status and the
+counter in the same transaction, so the invariant holds at every commit. The integration tests
+assert it after each scenario (`assertStockConserved`), and also that purchases equal completed
+reservations.
+
+## 2. Reserving
+
+```sql
+UPDATE "Drops"
+SET "availableStock" = "availableStock" - 1, "updatedAt" = now()
+WHERE id = :dropId AND "availableStock" > 0
+RETURNING id, "availableStock"
+```
+
+Zero rows returned means sold out (or the drop does not exist; a second query distinguishes the
+two). Otherwise the reservation row is inserted in the same transaction.
+
+The previous code did `SELECT ... FOR UPDATE`, checked `availableStock` in the application, then
+wrote the decremented value. Both approaches serialize concurrent reservers on the drop row. The
+differences:
+
+- Conditional UPDATE: one statement and one round trip. The row lock is taken when the statement
+  runs and held until commit, so the hold window is the rest of a two-statement transaction. The
+  decision ("is there stock") and the write are one atomic statement, so there is no
+  read-modify-write in the application and nothing to forget. If someone drops the lock in a
+  refactor, there is no lock to drop.
+- `SELECT ... FOR UPDATE` then `UPDATE`: two round trips, and correct only if every code path
+  remembers the lock. It stays the right tool when the decision depends on several reads or on
+  application logic that cannot be written as one predicate.
+
+Why the conditional UPDATE cannot oversell under READ COMMITTED (the Postgres default): when a
+second UPDATE finds the row locked by an uncommitted one, it waits. After the first commits, the
+second does not reuse its old snapshot of the row. Postgres re-fetches the latest row version and
+re-evaluates the `WHERE` clause against it (the EvalPlanQual recheck). If `availableStock` is now
+0, the row no longer matches and the statement updates nothing. This is what makes
+`availableStock > 0` in the predicate safe, where a separate SELECT would have read a stale value.
+
+Backstop: `CHECK ("availableStock" >= 0 AND "availableStock" <= "totalStock")`
+(`drops_available_stock_range`). If any code path, now or later, tries to oversell or to
+return a unit twice, the statement fails instead of corrupting the counter. A test updates stock
+to -1 directly and expects the constraint to reject it.
+
+## 3. Throughput
+
+All reservations for one drop update the same row, so they run one at a time. The ceiling for a
+single drop is about `1 / (time the row lock is held)`. The lock is held from the decrement until
+commit, so that time is the remaining statement latency (the reservation INSERT, including the FK
+checks and the unique-index probe) plus commit, dominated by the WAL fsync.
+
+Order-of-magnitude reasoning only: if that window is roughly 1 to a few milliseconds on a local
+or same-zone primary, a single drop sustains in the hundreds to low thousands of reservations per
+second. App-to-database round trips add to the hold time whenever the app pauses between the UPDATE and commit, which is why the transaction is just two statements with nothing in between. Different drops do not
+contend with each other. **This has not been benchmarked here**; the figures are a bound derived
+from the design, not a measurement, and slower storage or synchronous replication will lower them.
+
+Pool size matters: `DB_POOL_MAX` (default 5, `backend/src/config/config.js`). Connections beyond
+what the hot row can serve only queue on the lock while holding a pooled connection, which starves
+other endpoints. Size the pool for total concurrent work, not for peak reservation attempts.
+
+Mitigations if one drop ever becomes the bottleneck, roughly in order of cost:
+
+1. Keep the transaction as short as it is now. Do not add reads, HTTP calls or emits between the
+   UPDATE and commit.
+2. Bucket the counter: split `availableStock` into N rows per drop and decrement a random bucket
+   with the same conditional UPDATE, falling through to other buckets on zero. Contention drops
+   by about N; the cost is more complex sold-out detection and reads that sum the buckets.
+3. Put a queue or token system in front: admit only as many requests as there is stock, and let
+   the database see only admitted ones.
+4. Pre-generate one row per unit and claim one with
+   `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1`, so concurrent claimers take different rows
+   instead of queueing on one.
+
+## 4. Purchase versus expiry
+
+Both transitions leave `pending` through a conditional UPDATE on the reservation row.
+
+Purchase:
+
+```sql
+UPDATE "Reservations"
+SET status = 'completed', "updatedAt" = now()
+WHERE id = :reservationId AND user_id = :userId
+  AND status = 'pending' AND "expiresAt" > now()
+RETURNING id, drop_id
+```
+
+Expiry (inside the sweeper's CTE):
+
+```sql
+UPDATE "Reservations" r
+SET status = 'expired', "updatedAt" = now()
+FROM due
+WHERE r.id = due.id AND r.status = 'pending'
+```
+
+Whichever commits first wins. The other either waits on the row lock and then matches zero rows
+(same EvalPlanQual recheck as in section 2), or, for the sweeper, skips the row (section 5). A
+reservation is therefore purchased or expired, never both, and its unit is sold or returned to
+stock exactly once.
+
+The old bug: the expiry timer read the reservation without a lock and later wrote
+`status = 'expired'` unconditionally. A purchase that committed between the read and the write was
+overwritten, and the unit was added back to stock while a purchase row for it existed. That is a
+sold unit offered for sale again. Nothing in the old write checked that the state it had read was
+still current.
+
+Purchase also checks `"expiresAt" > now()` in the same statement, so the deadline is enforced by
+the purchase itself and does not depend on the sweeper having run. A due reservation that is still
+`pending` cannot be bought; the call returns `409 RESERVATION_EXPIRED`.
+
+## 5. Expiry
+
+Expiry is a database sweep, not a per-reservation `setTimeout`. In-process timers were lost on
+every restart (reservations stayed pending forever, holding stock) and cannot coordinate between
+instances. `ExpiryService.start` sweeps once at startup, which recovers anything that expired
+while the process was down, then every `EXPIRY_SWEEP_INTERVAL_MS` (default 5000). Sweeps within
+one process never overlap.
+
+Each sweep is one transaction and one statement chain: select due rows, mark them expired,
+increment `availableStock` per drop by the number released, return the changed drops so the caller
+can emit `stock_updated`.
+
+- `pg_try_advisory_xact_lock(72001)`: single-flight across instances. A second sweeper gets
+  `false` and returns immediately. Without it, two sweepers would update `Drops` rows in
+  whatever order their batches hit them; with several drops that order can differ and deadlock.
+  The lock is transaction-scoped, so it is released on commit, rollback or connection loss.
+- `FOR UPDATE SKIP LOCKED` on the due reservations: a reservation locked by an in-flight purchase
+  is skipped rather than waited on. If the purchase commits, the row is no longer pending and
+  later sweeps ignore it. If it rolls back, the next sweep expires it. Waiting would be unsafe
+  as well as slow: a sweeper that queued behind a purchase and then expired the row anyway would
+  return a sold unit.
+- Batch of 500 (`LIMIT`) ordered by `expiresAt`, looping inside `start` while a sweep comes back
+  full, so a large backlog (for example after downtime) is drained in bounded transactions.
+- Partial index for the scan, so the cost follows the number of pending rows, not the table size:
+
+```sql
+CREATE INDEX "reservations_pending_expires_at"
+ON "Reservations" ("expiresAt") WHERE status = 'pending'
+```
+
+Latency: a reservation can remain `pending` up to one sweep interval past `expiresAt`
+(5 s by default), so its unit returns to stock that much later than the deadline. During that
+window it cannot be purchased (section 4). The cost of the lag is only that stock appears later;
+it is never oversold or double-counted.
+
+## 6. Idempotency of purchase
+
+`Purchases.reservation_id` is a foreign key with a unique index (`purchases_reservation_id_key`).
+Existing purchases made before the migration keep NULL there; NULLs do not conflict.
+
+- Retry after success: the claim UPDATE matches no row (status is `completed`), so
+  `explainUnclaimed` looks up the purchase by reservation and user and returns it with
+  `created = false`. The controller answers `200` with `replayed: true`.
+- Concurrent retries: the later UPDATEs block on the row lock held by the first. After it commits
+  they re-evaluate, match nothing, and their follow-up lookup sees the committed purchase. One row
+  is created, every caller receives the same purchase id.
+- If a purchase row exists for a reservation that was still pending, the INSERT hits the unique
+  index and the call fails with `409 PURCHASE_CONFLICT` instead of guessing. This can only come
+  from data written outside the service; the unique index is the guarantee if the code is bypassed.
+
+A user cannot purchase another user's reservation: `user_id` is part of the claim predicate and
+the miss is reported as `404 RESERVATION_NOT_FOUND`.
+
+## 7. One pending reservation per user per drop
+
+```sql
+CREATE UNIQUE INDEX "reservations_one_pending_per_user_drop"
+ON "Reservations" (user_id, drop_id) WHERE status = 'pending'
+```
+
+Partial, so a user can reserve the same drop again after an earlier reservation completed or
+expired. The decrement runs before the INSERT; if the INSERT hits this index the whole
+transaction rolls back, which also undoes the decrement, and the caller gets
+`409 ALREADY_RESERVED`. Ten concurrent attempts by one user yield one reservation and nine
+rejections with stock reduced by exactly one.
+
+Older code allowed several pending reservations per user and drop, so the migration cannot just
+create the index. Before creating it, it ranks pending reservations per `(user_id, drop_id)` by
+`id DESC`, keeps the newest, marks the rest `expired`, and adds the released count back to each
+drop's `availableStock`, all in one statement so the stock invariant is preserved. The same
+migration makes `status`, `user_id` and `drop_id` NOT NULL on `Reservations` and adds the CHECK on
+`Drops` described in section 2. The whole migration runs in one transaction.
+
+## 8. Known limits
+
+- No authentication. `userId` comes from the request body, so any client can act as any user.
+  This is a demo; the "user cannot buy someone else's reservation" check protects against mistakes
+  by honest clients, not against an attacker.
+- Throughput per drop is bounded by the hot row (section 3) and has not been benchmarked.
+- Stock returns up to one sweep interval after the deadline (section 5).
+- Time comes from the database clock (`now()`), so app instances need not agree on time.
+
+Tests: `backend/test/reservations.test.js`, run with `npm run test:db` against a real Postgres
+whose name ends in `-test` (the suite drops and recreates the schema, so it refuses anything
+else). CI runs it. Each test forces one guarantee:
+
+- 40 concurrent reservers for 10 units: exactly 10 succeed, 30 get `SOLD_OUT`, stock is 0.
+- One user with 10 concurrent attempts: one reservation, nine `ALREADY_RESERVED`, units returned.
+- Reserving again after expiry works; unknown drop and unknown user return 404 codes and leave
+  stock unchanged.
+- The CHECK constraint rejects `availableStock = -1`.
+- 10 concurrent purchases of one reservation: one purchase row, one `created`, same id for all.
+- Retried purchase returns the original; another user's reservation is `RESERVATION_NOT_FOUND`.
+- Purchase after `expiresAt` but before the sweeper is refused and the reservation stays pending
+  until the sweep, which returns the unit once.
+- Expiry-first race: a held sweep transaction, a purchase proven queued via `pg_stat_activity`
+  lock waiters, then commit; the purchase is refused and stock returns once.
+- Purchase-first race: a held purchase transaction; the sweep returns without waiting and returns
+  nothing; the sold unit is not restored. A rolled-back purchase leaves the reservation to the
+  next sweep.
+- Stress: 60 users and 30 units over five rounds with purchases (some duplicated) racing five
+  parallel sweeps; the invariant holds after each round and no reservation is left pending.
+- Single-flight sweeper: a second sweep backs off while the first is open even though unlocked
+  due rows exist.
+- Reservations that expired during simulated downtime are released by the startup sweep, with one
+  `stock_updated` event.
+
+Per the commit message, each guarantee was checked by reintroducing the bug (status check
+removed, deadline check removed, old-timer sweeper, no SKIP LOCKED, no stock condition, no
+advisory lock); every mutation fails at least one test.
