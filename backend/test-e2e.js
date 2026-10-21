@@ -16,8 +16,8 @@ const { io } = require('socket.io-client');
 const sequelize = require('./src/config/database');
 const { User, Drop } = require('./src/models/index');
 
-const API_URL = 'http://localhost:5001/api';
-const SOCKET_URL = 'http://localhost:5001';
+const API_URL = 'http://localhost:5000/api';
+const SOCKET_URL = 'http://localhost:5000';
 
 // ============================================
 // Test Data

@@ -63,7 +63,7 @@ echo "✅ Seeders complete"
 echo ""
 echo -e "${BLUE}Step 4: Start backend server${NC}"
 echo "────────────────────────────────────────────────────────────────────────────"
-echo "⏳ Starting server on port 5001..."
+echo "⏳ Starting server on port 5000..."
 
 # Start the server in background
 npm run dev > server.log 2>&1 &
