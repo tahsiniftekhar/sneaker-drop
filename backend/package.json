@@ -11,12 +11,17 @@
     "test": "npm run test:atomic && npm run test:e2e",
     "test:guard": "node --test scripts/demo-reset-guard.test.js",
     "db:reset-demo": "node scripts/reset-demo.js",
-    "test:db": "node --test --test-concurrency=1 --test-timeout=30000 test/*.test.js"
+    "test:db": "node --test --test-concurrency=1 --test-timeout=30000 test/*.test.js",
+    "test:mutation": "node scripts/mutation-check.js",
+    "bench:reserve": "node scripts/bench-reserve.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "axios": "^1.13.5",
     "cors": "^2.8.6",
