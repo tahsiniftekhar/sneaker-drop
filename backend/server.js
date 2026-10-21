@@ -5,6 +5,7 @@ const cors = require('cors');
 const sequelize = require('./src/config/database');
 const routes = require('./src/routes');
 const initSocket = require('./src/config/socket');
+const ExpiryService = require('./src/services/ExpiryService');
 
 const app = express();
 const server = http.createServer(app);
@@ -35,10 +36,12 @@ app.set('socketio', io);
 
 // Global Error Handler
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(err.status || 500).json({
+  const status = err.status || err.statusCode || 500;
+  if (status >= 500) console.error(err.stack);
+  res.status(status).json({
     success: false,
-    message: err.message || 'Internal Server Error',
+    // Client errors (e.g. malformed JSON) keep their message; server errors never leak internals.
+    message: status < 500 ? err.message : 'Internal Server Error',
   });
 });
 
@@ -53,10 +56,21 @@ async function startServer() {
   try {
     await sequelize.authenticate();
     console.log('✅ Database connected successfully.');
-
   } catch (error) {
     console.error('❌ DB Connection Error:', error);
   }
 }
 
 startServer();
+
+// Reservation expiry runs from the database, so it survives restarts: the first sweep releases
+// anything that expired while the process was down.
+const stopSweeper = ExpiryService.start(io);
+
+const shutdown = () => {
+  stopSweeper();
+  server.close(() => sequelize.close().finally(() => process.exit(0)));
+  setTimeout(() => process.exit(1), 10000).unref();
+};
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
