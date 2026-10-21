@@ -135,6 +135,90 @@ test('a user can reserve again once their earlier reservation has expired', asyn
   await assertStockConserved(2);
 });
 
+// 'queued' once `n` backends wait on a lock, or 'settled' if `promise` finishes first. Never
+// rejects, so a test always gets to end the transaction it holds and fails on its assertions
+// instead of hanging.
+const queuedOrSettled = (promise, n) =>
+  Promise.race([
+    promise.then(() => 'settled', () => 'settled'),
+    waitForLockWaiters(n).then(() => 'queued', () => 'timed out'),
+  ]);
+
+test('reserving again while the hold is still live is refused and keeps the hold', async () => {
+  await seed({ users: 1, stock: 2 });
+  const { reservation } = await ReservationService.reserve(1, 1);
+  await assert.rejects(ReservationService.reserve(1, 1), { code: 'ALREADY_RESERVED' });
+  assert.equal(await statusOf(reservation.id), 'pending');
+  assert.equal(await stock(), 1);
+  await assertStockConserved(2);
+});
+
+const makeOverdue = (id) =>
+  sql(`UPDATE "Reservations" SET "expiresAt" = now() - interval '1 second' WHERE id = :id`, { id });
+
+test('a user can reserve again right after their deadline, before the sweeper has run', async () => {
+  // One unit, held by the user's own overdue reservation: the drop looks sold out until that hold
+  // is released, so reserve has to release it itself rather than wait for the next sweep.
+  const { reservation: old } = await ReservationService.reserve(1, 1);
+  await makeOverdue(old.id);
+
+  const { reservation, availableStock } = await ReservationService.reserve(1, 1);
+  assert.notEqual(reservation.id, old.id);
+  assert.equal(reservation.status, 'pending');
+  assert.equal(availableStock, 0, 'the released unit was taken again: net stock change 0');
+  assert.equal(await statusOf(old.id), 'expired');
+  assert.deepEqual(await ExpiryService.sweep(), [], 'nothing left for the sweeper to release');
+  await assertStockConserved(1);
+});
+
+test('re-reserving while the sweeper expires the same reservation does not deadlock', async () => {
+  // Two units, so reserve's decrement goes through without the released one.
+  await seed({ users: 1, stock: 2 });
+  const { reservation: old } = await ReservationService.reserve(1, 1);
+  await makeOverdue(old.id);
+
+  // A third transaction holds the Drops row so both sides queue in a chosen order: reserve first,
+  // then the sweep. If reserve took the Drops lock before touching the overdue reservation, the
+  // sweep would hold that reservation and wait for Drops while reserve's INSERT waited on the
+  // sweep's uncommitted index entry, and Postgres would abort one of them as a deadlock.
+  const blocker = await sequelize.transaction();
+  await sequelize.query('UPDATE "Drops" SET "updatedAt" = now() WHERE id = 1', { transaction: blocker });
+  const reserve = ReservationService.reserve(1, 1);
+  const sweep = queuedOrSettled(reserve, 1).then(() => ExpiryService.sweep());
+  const outcome = await queuedOrSettled(sweep, 2);
+  await blocker.commit();
+  const results = await settle([reserve, sweep]);
+
+  assert.deepEqual(codes(results), ['ok', 'ok'], 'neither side was aborted');
+  assert.equal(outcome, 'settled', 'the sweep skipped the reservation reserve had already claimed');
+  assert.deepEqual(results[1].value, []);
+  assert.equal(await statusOf(old.id), 'expired');
+  assert.equal(results[0].value.reservation.status, 'pending');
+  await assertStockConserved(2);
+});
+
+test('re-reserving while a sweep that already expired the reservation commits', async () => {
+  const { reservation: old } = await ReservationService.reserve(1, 1);
+  await makeOverdue(old.id);
+
+  const sweep = await sequelize.transaction();
+  const released = await ExpiryService.sweep({ transaction: sweep });
+  assert.equal(released[0].released, 1);
+
+  // reserve has to wait for the sweep on the reservation row. Checking stock first would see the
+  // committed 0 and answer SOLD_OUT without waiting for the unit the sweep is about to return.
+  const reserve = ReservationService.reserve(1, 1);
+  const outcome = await queuedOrSettled(reserve, 1);
+  await sweep.commit();
+  assert.equal(outcome, 'queued', 'reserve waited for the sweep');
+
+  const { reservation, availableStock } = await reserve;
+  assert.equal(reservation.status, 'pending');
+  assert.equal(availableStock, 0, 'the unit was returned once, by the sweep, and taken once');
+  assert.equal(await statusOf(old.id), 'expired');
+  await assertStockConserved(1);
+});
+
 test('unknown drop and unknown user are reported, not 500s, and leave stock untouched', async () => {
   await seed({ users: 1, stock: 1 });
   await assert.rejects(ReservationService.reserve(1, 999), { code: 'DROP_NOT_FOUND' });

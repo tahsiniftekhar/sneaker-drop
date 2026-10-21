@@ -45,12 +45,22 @@ const MUTATIONS = [
   {
     id: 'e', name: 'reserve has no stock condition',
     file: svc('ReservationService'),
-    edits: [['WHERE id = :dropId AND "availableStock" > 0', 'WHERE id = :dropId']],
+    edits: [['WHERE id = :dropId AND "availableStock" + :released > 0', 'WHERE id = :dropId']],
   },
   {
     id: 'f', name: 'sweeper advisory lock is a no-op',
     file: svc('ExpiryService'),
     edits: [['pg_try_advisory_xact_lock(:key) AS acquired', 'true AS acquired']],
+  },
+  {
+    id: 'g', name: "reserve leaves the caller's overdue hold to the sweeper",
+    file: svc('ReservationService'),
+    edits: [[`AND status = 'pending' AND "expiresAt" <= now()`, 'AND false']],
+  },
+  {
+    id: 'h', name: "reserve expires the caller's hold before its deadline",
+    file: svc('ReservationService'),
+    edits: [[`AND status = 'pending' AND "expiresAt" <= now()`, "AND status = 'pending'"]],
   },
 ];
 

@@ -32,14 +32,23 @@ reservations.
 ## 2. Reserving
 
 ```sql
+-- 1. Release the caller's own overdue hold on this drop, if the sweeper has not yet
+UPDATE "Reservations"
+SET status = 'expired', "updatedAt" = now()
+WHERE user_id = :userId AND drop_id = :dropId
+  AND status = 'pending' AND "expiresAt" <= now()
+RETURNING id
+
+-- 2. Take a unit; :released is the row count of step 1 (0 or 1)
 UPDATE "Drops"
-SET "availableStock" = "availableStock" - 1, "updatedAt" = now()
-WHERE id = :dropId AND "availableStock" > 0
+SET "availableStock" = "availableStock" + :released - 1, "updatedAt" = now()
+WHERE id = :dropId AND "availableStock" + :released > 0
 RETURNING id, "availableStock"
 ```
 
-Zero rows returned means sold out (or the drop does not exist; a second query distinguishes the
-two). Otherwise the reservation row is inserted in the same transaction.
+Zero rows returned by step 2 means sold out (or the drop does not exist; a second query
+distinguishes the two). Otherwise the reservation row is inserted in the same transaction.
+Step 1 is explained in section 7; without an overdue hold it matches nothing and `:released` is 0.
 
 The previous code did `SELECT ... FOR UPDATE`, checked `availableStock` in the application, then
 wrote the decremented value. Both approaches serialize concurrent reservers on the drop row. The
@@ -74,7 +83,9 @@ commit, so that time is the remaining statement latency (the reservation INSERT,
 checks and the unique-index probe) plus commit, dominated by the WAL fsync.
 
 App-to-database round trips add to the hold time whenever the app pauses between taking the lock
-and commit, which is why the transaction is just two statements with nothing in between.
+and commit, which is why nothing runs between the decrement and the INSERT. Step 1 runs before
+the Drops lock is taken, so it adds a round trip to each reservation but not to the hold time.
+The measurements below predate step 1.
 `SELECT ... FOR UPDATE` followed by a separate UPDATE adds one more round trip while the lock is
 held. Different drops do not contend with each other.
 
@@ -201,7 +212,8 @@ ON "Reservations" ("expiresAt") WHERE status = 'pending'
 Latency: a reservation can remain `pending` up to one sweep interval past `expiresAt`
 (5 s by default), so its unit returns to stock that much later than the deadline. During that
 window it cannot be purchased (section 4). The cost of the lag is only that stock appears later;
-it is never oversold or double-counted.
+it is never oversold or double-counted. The one exception is the holder: if they reserve the same
+drop again in that window, `reserve` releases the hold itself (section 7).
 
 ## 6. Idempotency of purchase
 
@@ -234,6 +246,27 @@ transaction rolls back, which also undoes the decrement, and the caller gets
 `409 ALREADY_RESERVED`. Ten concurrent attempts by one user yield one reservation and nine
 rejections with stock reduced by exactly one.
 
+A hold that is past `expiresAt` but not yet swept is still `pending`, so it still occupies the
+index. `reserve` therefore expires the caller's own overdue hold on the drop first (step 1 in
+section 2) and adds its unit back in the same Drops UPDATE, a net stock change of 0. Without it
+there were two problems:
+
+- Re-reserving right after the deadline returned `409 ALREADY_RESERVED` (or `SOLD_OUT`, if that
+  hold was the last unit) for up to one sweep interval.
+- Deadlock with the sweeper. The sweeper locks the reservation row, then the Drops row. The old
+  `reserve` locked the Drops row first, then its INSERT probed the unique index and found the
+  entry of the row the sweeper was expiring, so it waited for the sweeper's transaction while the
+  sweeper waited for Drops. Postgres aborted one side after `deadlock_timeout` (1 s); seen as a
+  500 from `reserve` or a failed sweep, depending on which side it picked.
+
+Step 1 runs before the Drops UPDATE, so `reserve` takes locks in the sweeper's order:
+reservation, then drop. If a sweep holds the overdue row, step 1 waits for it, then re-checks
+`status = 'pending'` on the committed version, matches nothing, and step 2 sees the unit the
+sweep returned. If `reserve` holds the row first, the sweep skips it (`SKIP LOCKED`). Either way
+the unit is released once. Step 1 only touches the caller's own reservation for this drop, and
+only once it is overdue; a live hold is untouched and the INSERT still answers
+`ALREADY_RESERVED`.
+
 Older code allowed several pending reservations per user and drop, so the migration cannot just
 create the index. Before creating it, it ranks pending reservations per `(user_id, drop_id)` by
 `id DESC`, keeps the newest, marks the rest `expired`, and adds the released count back to each
@@ -248,7 +281,8 @@ migration makes `status`, `user_id` and `drop_id` NOT NULL on `Reservations` and
   by honest clients, not against an attacker.
 - Throughput per drop is bounded by the hot row: about 1000–1500 reservations per second on a
   laptop, peaking near 8 concurrent writers (section 3).
-- Stock returns up to one sweep interval after the deadline (section 5).
+- Stock returns up to one sweep interval after the deadline (section 5), except to the holder
+  re-reserving the same drop (section 7).
 - Time comes from the database clock (`now()`), so app instances need not agree on time.
 
 Tests: `backend/test/reservations.test.js`, run with `npm run test:db` against a real Postgres
@@ -257,8 +291,14 @@ else). CI runs it. Each test forces one guarantee:
 
 - 40 concurrent reservers for 10 units: exactly 10 succeed, 30 get `SOLD_OUT`, stock is 0.
 - One user with 10 concurrent attempts: one reservation, nine `ALREADY_RESERVED`, units returned.
-- Reserving again after expiry works; unknown drop and unknown user return 404 codes and leave
-  stock unchanged.
+- Reserving again after expiry works. Reserving again while the hold is live is
+  `ALREADY_RESERVED` and keeps the hold. Reserving again after the deadline but before any sweep
+  works even when that hold was the last unit, and leaves nothing for the sweeper.
+- Re-reserve versus sweep, both orders forced with lock waiters: with reserve queued first on the
+  Drops row (held by a third transaction) the sweep skips the row and neither side is aborted
+  (the old code deadlocked here); with the sweep holding the expired row, reserve waits for it and
+  then takes the returned unit instead of answering `SOLD_OUT`.
+- Unknown drop and unknown user return 404 codes and leave stock unchanged.
 - The CHECK constraint rejects `availableStock = -1`.
 - 10 concurrent purchases of one reservation: one purchase row, one `created`, same id for all.
 - Retried purchase returns the original; another user's reservation is `RESERVATION_NOT_FOUND`.
@@ -284,16 +324,18 @@ file. It exits non-zero if any mutation survives:
 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:55432/sneaker-drop-test npm run test:mutation
 ```
 
-Result (about 10 s, no survivors):
+Result (about 13 s, no survivors):
 
 | mutation                                    | kind     | caught by                                                                                  |
 | ------------------------------------------- | -------- | ------------------------------------------------------------------------------------------ |
-| purchase drops `status = 'pending'`         | safety   | at least 4 tests: concurrent purchases, retry, expiry-first race, another user's reservation (a 5th varies by run) |
+| purchase drops `status = 'pending'`         | safety   | 3 to 5 tests by run: concurrent purchases, retry, expiry-first race always; another user's reservation and purchase past the deadline in some runs |
 | purchase drops the `expiresAt` check        | safety   | purchase past the deadline is refused                                                      |
 | sweeper drops `status = 'pending'` (old bug) | safety  | purchase-first race (sold unit returned to stock), stress, single-flight (stock CHECK violated) |
 | reserve drops `availableStock > 0`          | safety   | concurrent reservations: the CHECK constraint still blocks the oversell, but losers get a raw error instead of `SOLD_OUT` |
-| sweeper uses `FOR UPDATE` without `SKIP LOCKED` | liveness | purchase-first and rollback races: the sweep blocks on the purchase instead of skipping it |
+| sweeper uses `FOR UPDATE` without `SKIP LOCKED` | liveness | purchase-first and rollback races: the sweep blocks on the purchase instead of skipping it; re-reserve versus sweep: the sweep queues behind reserve |
 | advisory lock is a no-op                    | liveness | single-flight: the second sweeper queues on the `Drops` row instead of backing off        |
+| reserve leaves an overdue own hold to the sweeper | safety | all three re-reserve-after-deadline tests (`SOLD_OUT`, deadlock, reserve not waiting for the sweep) |
+| reserve expires its own hold before the deadline | safety | reserving again while the hold is live                                                    |
 
 The two liveness rows leave the data correct. With `SKIP LOCKED` removed, the purchase-first test
 passes every data assertion (reservation `completed`, stock 0, invariant holds). It fails only

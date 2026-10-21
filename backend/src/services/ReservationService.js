@@ -11,14 +11,29 @@ class ReservationService {
   // and re-check the condition, so stock can never be oversold (the CHECK constraint on Drops backs
   // this up). The partial unique index on (user_id, drop_id) WHERE status = 'pending' rejects a
   // second hold by the same user; the transaction then rolls back and the unit returns to stock.
+  //
+  // The caller's own hold on this drop that is past its deadline but not yet swept is expired first,
+  // and its unit goes back in the same Drops UPDATE, so re-reserving right after expiry works
+  // without waiting for the sweeper. Doing this before touching Drops keeps the sweeper's lock
+  // order (Reservations, then Drops): a sweep expiring the same row either finishes first, and this
+  // UPDATE waits for it and then matches nothing, or finds the row locked and skips it.
   static async reserve(userId, dropId, { transaction } = {}) {
     const run = async (t) => {
+      const [released] = await sequelize.query(
+        `UPDATE "Reservations"
+         SET status = 'expired', "updatedAt" = now()
+         WHERE user_id = :userId AND drop_id = :dropId
+           AND status = 'pending' AND "expiresAt" <= now()
+         RETURNING id`,
+        { replacements: { userId, dropId }, transaction: t }
+      );
+
       const [taken] = await sequelize.query(
         `UPDATE "Drops"
-         SET "availableStock" = "availableStock" - 1, "updatedAt" = now()
-         WHERE id = :dropId AND "availableStock" > 0
+         SET "availableStock" = "availableStock" + :released - 1, "updatedAt" = now()
+         WHERE id = :dropId AND "availableStock" + :released > 0
          RETURNING id, "availableStock"`,
-        { replacements: { dropId }, transaction: t }
+        { replacements: { dropId, released: released.length }, transaction: t }
       );
 
       if (taken.length === 0) {
